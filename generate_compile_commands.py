@@ -1,0 +1,2 @@
+Import("env")
+env.Append(COMPILATIONDB_INCLUDE_TOOLCHAIN=True)
