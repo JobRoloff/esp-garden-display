@@ -4,7 +4,9 @@ Weilding cpp, I'm harassing myself with notifications on what my janky greenhous
 
 ## Getting Started
 
-1. At thte project root, create a secretes.ini file and pupulate it the file with the following
+### Setup ESP32
+
+At the project root, create a secretes.ini file and pupulate it the file with the following
 
 ```bash
 [secrets]
@@ -12,15 +14,21 @@ wifi_ssid = "your wifi namme"
 wifi_pass = "your wifi password"
 ```
 
-2. Assuming you have a MQTT broker running and you're using a different host, port and topic, change the setup function in main.cpp
+Assuming you have a MQTT broker running and you're using a different host, port and topic, change the setup function in main.cpp
 
 ```bash
 const char* MQTT_HOST = "192.168.1.66";
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_TOPIC = "pi-garden-light/oled";
+const char* MQTT_TOPIC = "pi-peripherals";
 ```
 
-3. Upload to the esp32
+Upload to the esp32 using the vscode platformio extension's upload buttton
+
+(Optional) Monitor in terminal
+
+```bash
+pio device monitor
+```
 
 ## Hardware
 |item|img|

@@ -53,7 +53,7 @@ void setup() {
   // MQTT broker (LAN IP of Mosquitto)
   const char* MQTT_HOST = "192.168.1.66";
   const uint16_t MQTT_PORT = 1883;
-  const char* MQTT_TOPIC = "pi-garden-light/oled";
+  const char* MQTT_TOPIC = "pi-peripherals";
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
