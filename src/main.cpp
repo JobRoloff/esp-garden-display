@@ -82,5 +82,7 @@ void loop() {
 
   // Keep MQTT alive + process incoming messages
   mqtt_loop();
+  // Draw last received message on display (done here, not in callback, so I2C is safe)
+  mqtt_pump_display();
   delay(10);
 }

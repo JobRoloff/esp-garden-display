@@ -1,9 +1,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 #include "mqtt_client.h"
 #include "display.h"
+
+// Payloads can be ~2KB; PubSubClient drops messages larger than this.
+static const size_t kPayloadMax = 2048;
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
@@ -12,39 +16,76 @@ static const char* g_host = nullptr;
 static uint16_t g_port = 1883;
 static const char* g_topic = nullptr;
 
-static char msgBuf[256];
+static char msgBuf[320];
+// Deferred display: full payload copied here in callback; parsed and drawn in mqtt_pump_display().
+static char pendingDisplayBuf[2048];
+static volatile bool pendingDisplay = false;
 
-static void showPayloadOnOled(const char* payload) {
-  // Expect "line1\nline2" (line2 optional)
-  const char* nl = strchr(payload, '\n');
+// Use Print* so IDE/clang resolves Print::print/println (HardwareSerial inherits Print in Arduino core)
+static Print* _log = reinterpret_cast<Print*>(&Serial);
 
-  if (!nl) {
-    display_text(payload, nullptr);
-    return;
+// Parse JSON and show raw_latest temp + humidity; fallback to raw text.
+static void showPayloadOnOled(const char* payload, size_t len) {
+  StaticJsonDocument<2048> doc;
+  DeserializationError err = deserializeJson(doc, payload, len);
+
+  if (!err) {
+    JsonObject raw = doc["raw_latest"];
+    if (!raw.isNull()) {
+      float temp = raw["temp"] | 0.0f;
+      float hum = raw["humidity"] | 0.0f;
+      char line1[24];
+      char line2[24];
+      snprintf(line1, sizeof(line1), "%.1f C", (double)temp);
+      snprintf(line2, sizeof(line2), "%.1f %%", (double)hum);
+      display_text(line1, line2);
+      return;
+    }
   }
 
-  char line1[64];
-  char line2[64];
-
-  size_t line1Len = (size_t)(nl - payload);
-  line1Len = min(line1Len, sizeof(line1) - 1);
-  memcpy(line1, payload, line1Len);
-  line1[line1Len] = '\0';
-
-  const char* second = nl + 1;
-  strncpy(line2, second, sizeof(line2) - 1);
-  line2[sizeof(line2) - 1] = '\0';
-
-  display_text(line1, line2);
+  // Fallback: show first line(s) of raw payload (e.g. plain "line1\nline2" messages)
+  const char* nl = strchr(payload, '\n');
+  if (nl) {
+    size_t line1Len = (size_t)(nl - payload);
+    line1Len = line1Len >= 63 ? 63 : line1Len;
+    char line1[64];
+    char line2[64];
+    memcpy(line1, payload, line1Len);
+    line1[line1Len] = '\0';
+    size_t rest = len - (line1Len + 1);
+    rest = rest >= 63 ? 63 : rest;
+    memcpy(line2, nl + 1, rest);
+    line2[rest] = '\0';
+    display_text(line1, line2);
+  } else {
+    char line1[64];
+    size_t copy = len >= 63 ? 63 : len;
+    memcpy(line1, payload, copy);
+    line1[copy] = '\0';
+    display_text(line1, nullptr);
+  }
 }
 
-static void onMqttMessage(char* topic, byte* payload, unsigned int length) {
-  unsigned int n = min(length, (unsigned int)(sizeof(msgBuf) - 1));
-  memcpy(msgBuf, payload, n);
-  msgBuf[n] = '\0';
+static volatile size_t pendingDisplayLen = 0;
 
-  Serial.printf("MQTT topic=%s len=%u payload=\n%s\n", topic, n, msgBuf);
-  showPayloadOnOled(msgBuf);
+static void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+  // Log first chunk only (avoid huge Serial dump)
+  size_t logLen = min((size_t)length, sizeof(msgBuf) - 1);
+  memcpy(msgBuf, payload, logLen);
+  msgBuf[logLen] = '\0';
+  char logBuf[380];
+  snprintf(logBuf, sizeof(logBuf), "[MQTT RX] topic=%s len=%u\n", topic, (unsigned)length);
+  _log->print(logBuf);
+  _log->print(msgBuf);
+  if (length > logLen) _log->print(F("...\n"));
+  else _log->print('\n');
+
+  // Defer display to main loop; copy full payload so we can parse JSON (up to buffer size).
+  size_t copyLen = min((size_t)length, sizeof(pendingDisplayBuf) - 1);
+  memcpy(pendingDisplayBuf, payload, copyLen);
+  pendingDisplayBuf[copyLen] = '\0';
+  pendingDisplayLen = copyLen;
+  pendingDisplay = true;
 }
 
 static bool connectMqtt() {
@@ -52,17 +93,20 @@ static bool connectMqtt() {
 
   mqtt.setServer(g_host, g_port);
   mqtt.setCallback(onMqttMessage);
+  // Payloads are ~2KB; messages larger than buffer are dropped by PubSubClient
+  mqtt.setBufferSize((unsigned int)kPayloadMax);
 
   String clientId = "esp32-oled-" + String((uint32_t)ESP.getEfuseMac(), HEX);
 
-  Serial.print("Connecting to MQTT...");
+  _log->print(F("Connecting to MQTT..."));
   if (mqtt.connect(clientId.c_str())) {
-    Serial.println("connected");
+    _log->println(F("connected"));
     mqtt.subscribe(g_topic, 1); // QoS 1
     return true;
   }
 
-  Serial.printf("failed rc=%d\n", mqtt.state());
+  snprintf(msgBuf, sizeof(msgBuf), "failed rc=%d\n", mqtt.state());
+  _log->print(msgBuf);
   return false;
 }
 
@@ -95,6 +139,13 @@ void mqtt_loop() {
   }
 
   mqtt.loop();
+}
+
+void mqtt_pump_display() {
+  if (!pendingDisplay) return;
+  pendingDisplay = false;
+  size_t len = pendingDisplayLen;
+  showPayloadOnOled(pendingDisplayBuf, len);
 }
 
 bool mqtt_is_connected() {
